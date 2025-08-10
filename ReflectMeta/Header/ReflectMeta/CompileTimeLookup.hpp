@@ -217,7 +217,55 @@ namespace ReflectMeta
             return MethodTypeTemplatedErased(hit->qualifiedName, reinterpret_cast<MethodTypeTemplatedErased::ErasedTemplatedCaller>(hit->erasedTemplatedCaller));
         }
 
+        auto ConstructInto(void* storage, void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered = true) const -> bool
+        {
+            const CtorDesc* c = FindCtor(argc, argTypes, accessibilityConsidered); if (!c) return false; c->erasedCtor(storage, args); return true;
+        }
+
+        auto New(void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered = true) const -> void*
+        {
+            void* mem = ::operator new(desc->sizeInBytes, std::align_val_t(desc->alignInBytes)); if (!ConstructInto(mem, args, argc, argTypes, accessibilityConsidered)) { ::operator delete(mem, std::align_val_t(desc->alignInBytes)); return nullptr; } return mem;
+        }
+
+        auto Delete(void* p, bool accessibilityConsidered = true) const -> bool
+        {
+            if (!desc->destructor.has_value()) return false; const DtorDesc& d = *desc->destructor; if (accessibilityConsidered && d.access != Access::PUBLIC) return false; d.erasedDtor(p); ::operator delete(p, std::align_val_t(desc->alignInBytes)); return true;
+        }
+
     private:
+
+        const CtorDesc* FindCtor(size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered) const
+        {
+            auto matchQual = [&](const QualTypeInfo& q, const std::type_info& ti) noexcept -> bool
+                {
+                    return q.qualifiedName == std::string_view(ti.name());
+                };
+
+            for (const CtorDesc& c : desc->constructors)
+            {
+                if (accessibilityConsidered && c.access != Access::PUBLIC)
+                    continue;
+
+                if (c.parameters.size() != argc)
+                    continue;
+
+                bool ok = true;
+                
+                for (size_t i = 0; i < argc; ++i)
+                {
+                    if (!matchQual(c.parameters[i].type, *argTypes[i]))
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+
+                if (ok)
+                    return &c;
+            }
+
+            return nullptr;
+        }
 
         static auto MatchName(bool accessibilityConsidered, Access memberAccess, std::string_view stored, std::string_view query) noexcept -> bool
         {
@@ -403,6 +451,47 @@ namespace ReflectMeta
             return *this;
         }
 
+        template <Access A, bool Explicit, typename ClassT, typename... Args>
+        auto Ctor() -> TypeHierarchy&
+        {
+            CtorDesc c;
+
+            c.qualifiedName = std::string_view(current.qualifiedName);
+            c.parameters = ParamsOf<Args...>();
+            c.access = A;
+            c.isExplicit = Explicit;
+
+            if constexpr (!std::is_abstract_v<ClassT> && std::is_constructible_v<ClassT, Args...>)
+            {
+                c.erasedCtor = +[](void* storage, void** args) noexcept -> void
+                    {
+                        CallCtor<ClassT, Args...>(storage, args);
+                    };
+            }
+            else
+                c.erasedCtor = nullptr;
+
+            current.constructors.push_back(std::move(c));
+
+            return *this;
+        }
+
+        template <Access A, typename ClassT>
+        auto Dtor() -> TypeHierarchy&
+        {
+            DtorDesc d;
+
+            d.qualifiedName = std::string_view(current.qualifiedName);
+            d.access = A;
+            d.isVirtual = std::has_virtual_destructor_v<ClassT>;
+            d.isNoexcept = std::is_nothrow_destructible_v<ClassT>;
+            d.erasedDtor = +[](void* obj) noexcept -> void { CallDtor<ClassT>(obj); };
+
+            current.destructor = d;
+
+            return *this;
+        }
+
         auto Commit() -> const TypeDesc&
         {
             types.push_back(current);
@@ -528,6 +617,24 @@ namespace ReflectMeta
         static auto CallPMFConst(R(C::* pmf)(A...) const, void* self, void** args, void* retOut) noexcept -> void
         {
             CallPMFConstIndexed<R, C, A...>(pmf, self, args, retOut, std::index_sequence_for<A...>{});
+        }
+
+        template <typename C, typename... A, std::size_t... I>
+        static auto CallCtorIndexed(void* storage, void** args, std::index_sequence<I...>) noexcept -> void
+        {
+            ::new (storage) C(*reinterpret_cast<std::remove_reference_t<std::tuple_element_t<I, std::tuple<A...>>>*>(args[I])...);
+        }
+
+        template <typename C, typename... A>
+        static auto CallCtor(void* storage, void** args) noexcept -> void
+        {
+            CallCtorIndexed<C, A...>(storage, args, std::index_sequence_for<A...>{});
+        }
+
+        template <typename C>
+        static auto CallDtor(void* obj) noexcept -> void
+        {
+            reinterpret_cast<C*>(obj)->~C();
         }
 
         static auto HashName(std::string_view qn) -> TypeId

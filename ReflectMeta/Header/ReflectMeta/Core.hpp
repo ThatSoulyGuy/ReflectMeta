@@ -13,6 +13,7 @@
 #include <utility>
 #include <tuple>
 #include <cassert>
+#include <new>
 
 #if defined(_MSC_VER)
 #define REFLECT_META_USED
@@ -175,6 +176,28 @@ namespace ReflectMeta
         AdjustConstPtr adjustConstPtr;
     };
 
+    struct CtorDesc
+    {
+        std::string_view qualifiedName;
+        std::vector<MethodParam> parameters;
+        Access access;
+        bool isExplicit;
+
+        using Erased = void (*)(void* storage, void** args) noexcept;
+        Erased erasedCtor;
+    };
+
+    struct DtorDesc
+    {
+        std::string_view qualifiedName;
+        Access access;
+        bool isVirtual;
+        bool isNoexcept;
+
+        using Erased = void (*)(void* obj) noexcept;
+        Erased erasedDtor;
+    };
+
     struct TypeDesc
     {
         TypeId id;
@@ -195,109 +218,9 @@ namespace ReflectMeta
         std::vector<MethodDesc> methods;
         std::vector<TemplatedMethodDesc> templatedMethods;
         std::vector<BaseDesc> bases;
-    };
 
-    class Registry
-    {
-
-    public:
-
-        static auto Instance() -> Registry&
-        {
-            static Registry r;
-            
-            return r;
-        }
-
-        auto RegisterRange(const TypeDesc* begin, const TypeDesc* end) -> void
-        {
-            for (const TypeDesc* p = begin; p != end; ++p)
-            {
-                auto [it, inserted] = typeById.emplace(p->id, p);
-                nameToId.emplace(p->qualifiedName, p->id);
-            }
-        }
-
-        auto MapStdTypeIndex(std::type_index idx, TypeId id) -> void
-        {
-            byStdTypeIndex.emplace(idx, id);
-        }
-
-        auto Find(TypeId id) const -> const TypeDesc*
-        {
-            auto it = typeById.find(id);
-            
-            if (it == typeById.end())
-                return nullptr;
-            
-            return it->second;
-        }
-
-        auto FindByQualifiedName(std::string_view qn) const -> const TypeDesc*
-        {
-            auto it = nameToId.find(qn);
-            
-            if (it == nameToId.end())
-                return nullptr;
-            
-            return Find(it->second);
-        }
-
-        template <class T>
-        auto Get() const -> const TypeDesc*
-        {
-            auto it = byStdTypeIndex.find(std::type_index(typeid(T)));
-
-            if (it == byStdTypeIndex.end())
-                return nullptr;
-            
-            return Find(it->second);
-        }
-
-        auto Get(std::string_view name) const -> const TypeDesc*
-        {
-            if (const TypeDesc* t = FindByQualifiedName(name))
-                return t;
-
-            const TypeDesc* hit = nullptr;
-
-            for (const auto& kv : typeById)
-            {
-                const TypeDesc* p = kv.second;
-
-                if (p != nullptr && p->name == name)
-                {
-                    if (hit != nullptr)
-                        return nullptr;
-
-                    hit = p;
-                }
-            }
-
-            return hit;
-        }
-
-        auto GetAllBySimpleName(std::string_view simpleName) const -> std::vector<const TypeDesc*>
-        {
-            std::vector<const TypeDesc*> v; v.reserve(2);
-
-            for (const auto& kv : typeById)
-            {
-                const TypeDesc* p = kv.second;
-
-                if (p != nullptr && p->name == simpleName)
-                    v.push_back(p);
-            }
-
-            return v;
-        }
-
-    private:
-
-        std::unordered_map<TypeId, const TypeDesc*, TypeId::Hash> typeById;
-        std::unordered_map<std::string_view, TypeId> nameToId;
-        std::unordered_map<std::type_index, TypeId> byStdTypeIndex;
-
+        std::vector<CtorDesc> constructors;
+        std::optional<DtorDesc> destructor;
     };
 
     template <typename MemberT>
@@ -457,12 +380,12 @@ namespace ReflectMeta
 
     class MethodTypeTemplatedErased
     {
-    
+
     public:
-        
+
         using ErasedTemplatedCaller = void (*)(const std::type_info* const*, void*, void**, void*) noexcept;
 
-        MethodTypeTemplatedErased(std::string_view qualifiedName, ErasedTemplatedCaller caller) : qualifiedName(qualifiedName), caller(caller) { }
+        MethodTypeTemplatedErased(std::string_view qualifiedName, ErasedTemplatedCaller caller) : qualifiedName(qualifiedName), caller(caller) {}
 
         auto InvokeWithType(const std::type_info* const* typeArgs, void* self, void** args, void* retOut) const noexcept -> void
         {
@@ -473,11 +396,325 @@ namespace ReflectMeta
         {
             return qualifiedName;
         }
-    
+
     private:
 
         std::string_view qualifiedName;
-        ErasedTemplatedCaller caller;
+        mutable ErasedTemplatedCaller caller;
+    };
+
+    class Registry
+    {
+
+    public:
+
+        static auto Instance() -> Registry&
+        {
+            static Registry r;
+
+            return r;
+        }
+
+        auto RegisterRange(const TypeDesc* begin, const TypeDesc* end) -> void
+        {
+            for (const TypeDesc* p = begin; p != end; ++p)
+            {
+                auto [it, inserted] = typeById.emplace(p->id, p);
+                nameToId.emplace(p->qualifiedName, p->id);
+
+                FixUpTemplatedForType(*const_cast<TypeDesc*>(p));
+            }
+        }
+
+        auto MapStdTypeIndex(std::type_index idx, TypeId id) -> void
+        {
+            byStdTypeIndex.emplace(idx, id);
+        }
+
+        auto Find(TypeId id) const -> const TypeDesc*
+        {
+            auto it = typeById.find(id);
+
+            if (it == typeById.end())
+                return nullptr;
+
+            return it->second;
+        }
+
+        auto FindByQualifiedName(std::string_view qn) const -> const TypeDesc*
+        {
+            auto it = nameToId.find(qn);
+
+            if (it == nameToId.end())
+                return nullptr;
+
+            return Find(it->second);
+        }
+
+        template <class T>
+        auto Get() const -> const TypeDesc*
+        {
+            auto it = byStdTypeIndex.find(std::type_index(typeid(T)));
+
+            if (it == byStdTypeIndex.end())
+                return nullptr;
+
+            return Find(it->second);
+        }
+
+        auto Get(std::string_view name) const -> const TypeDesc*
+        {
+            if (const TypeDesc* t = FindByQualifiedName(name))
+                return t;
+
+            const TypeDesc* hit = nullptr;
+
+            for (const auto& kv : typeById)
+            {
+                const TypeDesc* p = kv.second;
+
+                if (p != nullptr && p->name == name)
+                {
+                    if (hit != nullptr)
+                        return nullptr;
+
+                    hit = p;
+                }
+            }
+
+            return hit;
+        }
+
+        auto GetAllBySimpleName(std::string_view simpleName) const -> std::vector<const TypeDesc*>
+        {
+            std::vector<const TypeDesc*> v; v.reserve(2);
+
+            for (const auto& kv : typeById)
+            {
+                const TypeDesc* p = kv.second;
+
+                if (p != nullptr && p->name == simpleName)
+                    v.push_back(p);
+            }
+
+            return v;
+        }
+
+        auto AttachTemplatedDispatcher(std::string_view classQualifiedName, std::string_view methodSimpleOrQualifiedName, MethodTypeTemplatedErased::ErasedTemplatedCaller caller, void* binderTag) -> bool
+        {
+            if (const TypeDesc* typeDesc = FindByQualifiedName(classQualifiedName))
+            {
+                TypeDesc* t = const_cast<TypeDesc*>(typeDesc);
+
+                for (TemplatedMethodDesc& m : t->templatedMethods)
+                {
+                    if (MatchName(m.name, methodSimpleOrQualifiedName) || MatchName(m.qualifiedName, methodSimpleOrQualifiedName))
+                    {
+                        m.erasedTemplatedCaller = reinterpret_cast<void*>(caller);
+                        m.binderTag = binderTag;
+
+                        return true;
+                    }
+                }
+            }
+
+            PendingKey k{ std::string(classQualifiedName), std::string(methodSimpleOrQualifiedName) };
+
+            pendingTemplated[k] = PendingEntry{ caller, binderTag };
+
+            return false;
+        }
+
+        auto New(std::string_view typeName, void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered = true) -> void*
+        {
+            const TypeDesc* t = Get(typeName);
+            
+            if (!t)
+                return nullptr;
+            
+            return New(*t, args, argc, argTypes, accessibilityConsidered);
+        }
+
+        auto ConstructInto(std::string_view typeName, void* storage, void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered = true) -> bool
+        {
+            const TypeDesc* t = Get(typeName);
+
+            if (!t)
+                return false;
+            
+            return ConstructInto(*t, storage, args, argc, argTypes, accessibilityConsidered);
+        }
+
+        auto Delete(std::string_view typeName, void* p, bool accessibilityConsidered = true) -> bool
+        {
+            const TypeDesc* t = Get(typeName);
+            
+            if (!t)
+                return false;
+            
+            return Delete(*t, p, accessibilityConsidered);
+        }
+
+        template <class T>
+        auto New(void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered = true) -> T*
+        {
+            const TypeDesc* t = Get<T>(); if (!t) return nullptr; return reinterpret_cast<T*>(New(*t, args, argc, argTypes, accessibilityConsidered));
+        }
+
+private:
+
+        struct PendingKey
+        {
+            std::string typeQN;
+            std::string method;
+
+            bool operator==(const PendingKey& o) const noexcept
+            {
+                return typeQN == o.typeQN && method == o.method;
+            }
+        };
+        struct PendingKeyHash
+        {
+            size_t operator()(const PendingKey& k) const noexcept
+            {
+                size_t h1 = std::hash<std::string>{}(k.typeQN);
+                size_t h2 = std::hash<std::string>{}(k.method);
+
+                return h1 ^ (h2 << 1);
+            }
+        };
+
+        struct PendingEntry
+        {
+            MethodTypeTemplatedErased::ErasedTemplatedCaller caller;
+            void* binderTag;
+        };
+
+        static auto MatchCtor(const CtorDesc& c, size_t argc, const std::type_info* const* argTypes) noexcept -> bool
+        {
+            if (c.parameters.size() != argc)
+                return false;
+
+            for (size_t i = 0; i < argc; ++i)
+            {
+                if (c.parameters[i].type.qualifiedName != std::string_view(argTypes[i]->name()))
+                    return false;
+            }
+
+            return true;
+        }
+
+        static auto FindCtor(const TypeDesc& t, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered) -> const CtorDesc*
+        {
+            for (const CtorDesc& c : t.constructors)
+            {
+                if (!c.erasedCtor)
+                    continue;
+
+                if (accessibilityConsidered && c.access != Access::PUBLIC)
+                    continue;
+
+                if (c.parameters.size() != argc)
+                    continue;
+
+                bool ok = true;
+
+                for (size_t i = 0; i < argc; ++i)
+                {
+                    if (c.parameters[i].type.qualifiedName != std::string_view(argTypes[i]->name()))
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+
+                if (ok)
+                    return &c;
+            }
+
+            return nullptr;
+        }
+
+        auto New(const TypeDesc& t, void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered) -> void*
+        {
+            const CtorDesc* c = FindCtor(t, argc, argTypes, accessibilityConsidered);
+            
+            if (!c)
+                return nullptr;
+            
+            void* mem = ::operator new(t.sizeInBytes, std::align_val_t(t.alignInBytes));
+            
+            c->erasedCtor(mem, args);
+            
+            return mem;
+        }
+
+        auto ConstructInto(const TypeDesc& t, void* storage, void** args, size_t argc, const std::type_info* const* argTypes, bool accessibilityConsidered) -> bool
+        {
+            const CtorDesc* c = FindCtor(t, argc, argTypes, accessibilityConsidered);
+            
+            if (!c)
+                return false;
+            
+            c->erasedCtor(storage, args);
+            
+            return true;
+        }
+
+        auto Delete(const TypeDesc& t, void* p, bool accessibilityConsidered) -> bool
+        {
+            if (!t.destructor.has_value())
+                return false;
+            
+            const DtorDesc& d = *t.destructor;
+            
+            if (accessibilityConsidered && d.access != Access::PUBLIC)
+                return false; d.erasedDtor(p);
+            
+            ::operator delete(p, std::align_val_t(t.alignInBytes));
+            
+            return true;
+        }
+
+        static bool MatchName(std::string_view stored, std::string_view q) noexcept
+        {
+            return stored == q || (stored.rfind("::") != std::string_view::npos && stored.substr(stored.rfind("::") + 2) == q);
+        }
+
+        void FixUpTemplatedForType(TypeDesc& t)
+        {
+            for (TemplatedMethodDesc& m : t.templatedMethods)
+            {
+                if (m.erasedTemplatedCaller)
+                    continue;
+
+                PendingKey k1{ std::string(t.qualifiedName), std::string(m.name) };
+                PendingKey k2{ std::string(t.qualifiedName), std::string(m.qualifiedName) };
+
+                auto tryApply = [&](const PendingKey& k)
+                {
+                    auto it = pendingTemplated.find(k);
+
+                    if (it == pendingTemplated.end())
+                        return false;
+
+                    m.erasedTemplatedCaller = reinterpret_cast<void*>(it->second.caller);
+                    m.binderTag = it->second.binderTag;
+
+                    pendingTemplated.erase(it);
+
+                    return true;
+                };
+
+                (void)(tryApply(k1) || tryApply(k2));
+            }
+        }
+
+        std::unordered_map<TypeId, const TypeDesc*, TypeId::Hash> typeById;
+        std::unordered_map<std::string_view, TypeId> nameToId;
+        std::unordered_map<std::type_index, TypeId> byStdTypeIndex;
+        std::unordered_map<PendingKey, PendingEntry, PendingKeyHash> pendingTemplated;
+
     };
 
     template <typename Tag, typename T>

@@ -1,4 +1,4 @@
-﻿#pragma region Foo.Shared.hpp
+﻿#pragma region Foo.hpp
 
 #pragma once
 
@@ -10,6 +10,11 @@
 
 template <typename T>
 concept MyConcept = std::same_as<T, ReflectMeta::TypenameClass> || std::is_arithmetic_v<T>;
+
+namespace ReflectMeta
+{
+    REFLECT_META_ALIAS_CONCEPT_TYPE(ConceptTypesInternal, MyConcept)
+}
 
 template <typename T>
 class MyBaseClass

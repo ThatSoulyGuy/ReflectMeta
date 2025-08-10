@@ -1,70 +1,7 @@
 #pragma region Main.Reflect.cpp
 
-#include <unordered_map>
-#include <typeindex>
 #include "ReflectMeta/ReflectMeta.hpp"
 #include "Foo.hpp"
-
-using namespace ReflectMeta;
-
-namespace ReflectMeta { REFLECT_META_ALIAS_CONCEPT_TYPE(ConceptTypesInternal, MyConcept) }
-template <typename T> using ReflectMetaConcept_MyConcept = ReflectMeta::ConceptTypesInternal::MyConcept<T>;
-
-namespace ReflectMetaGenerated
-{
-    struct FooBinders
-    {
-        struct BinderSomeOtherMethod
-        {
-            template <typename T>
-            static auto Call(::Foo& self, T* pointerValue, T& referenceValue, const T constValue) noexcept -> void
-            {
-                return self.template SomeOtherMethod<T>(pointerValue, referenceValue, constValue);
-            }
-        };
-
-        struct BinderSomeOtherOtherMethod
-        {
-            template <typename T>
-            static auto Call(::Foo& self, T* pointerValue, const T& referenceValue, T** pointerToPointer) noexcept -> T
-            {
-                return self.template SomeOtherOtherMethod<T>(pointerValue, referenceValue, pointerToPointer);
-            }
-        };
-    };
-}
-
-namespace ReflectMeta
-{
-    template <>
-    struct SupportedTypes<DefaultTemplateTag> { using List = TypeList<int, float>; };
-
-    template <>
-    struct SupportedTypes<ConceptTypesInternal::MyConcept_Tag> { using List = TypeList<int, float>; };
-}
-
-namespace ReflectMetaGenerated
-{
-    using Erased = ReflectMeta::MethodTypeTemplatedErased::ErasedTemplatedCaller;
-    
-    static constexpr Erased kErased_SomeOtherMethod =
-        &ReflectMeta::GenericTemplatedErasedCaller<
-        ReflectMeta::DefaultTemplateTag, ::Foo,
-        ReflectMeta::Meta::RetVoid,
-        ReflectMetaGenerated::FooBinders::BinderSomeOtherMethod,
-        ReflectMeta::Meta::ParamPtr,
-        ReflectMeta::Meta::ParamLRef,
-        ReflectMeta::Meta::ParamCVal>;
-
-    static constexpr Erased kErased_SomeOtherOtherMethod =
-        &ReflectMeta::GenericTemplatedErasedCaller<
-        ReflectMeta::ConceptTypesInternal::MyConcept_Tag, ::Foo,
-        ReflectMeta::Meta::RetSelf,
-        ReflectMetaGenerated::FooBinders::BinderSomeOtherOtherMethod,
-        ReflectMeta::Meta::ParamPtr,
-        ReflectMeta::Meta::ParamCLRef,
-        ReflectMeta::Meta::ParamPtrPtr>;
-}
 
 namespace ReflectMeta
 {
@@ -74,11 +11,14 @@ namespace ReflectMeta
         auto Get() const noexcept -> const TypeHierarchy&
         {
             auto& th = TypeHierarchy::New();
+
             th.Struct<::MyBaseClass<int>>("::MyBaseClass<int>")
+				.Ctor<Access::PUBLIC, false, ::MyBaseClass<int>>()
                 .Member<Access::PUBLIC, int>("::MyBaseClass<int>::myTemplate", offsetof(::MyBaseClass<int>, myTemplate))
                 .Method<Access::PUBLIC, Qualifiers::NONE, const int&, ::MyBaseClass<int>>("::MyBaseClass<int>::SomeCoolFunction", &::MyBaseClass<int>::SomeCoolFunction, true)
                 .MethodPureVirtual<Access::PUBLIC, Qualifiers::NONE, void, ::MyBaseClass<int>, int*>("::MyBaseClass<int>::SomeCoolerFunction")
                 .Commit();
+
             return th;
         }
     };
@@ -89,9 +29,12 @@ namespace ReflectMeta
         auto Get() const noexcept -> const TypeHierarchy&
         {
             auto& th = TypeHierarchy::New();
+
             th.Struct<::MyOtherBaseClass>("::MyOtherBaseClass")
+                .Ctor<Access::PUBLIC, false, ::MyOtherBaseClass>()
                 .MethodPureVirtual<Access::PUBLIC, Qualifiers::NONE, void, ::MyOtherBaseClass>("::MyOtherBaseClass::MyCoolerMethod")
                 .Commit();
+
             return th;
         }
     };
@@ -102,7 +45,9 @@ namespace ReflectMeta
         auto Get() const noexcept -> const TypeHierarchy&
         {
             auto& th = TypeHierarchy::New();
+
             th.Struct<::Foo>("::Foo")
+                .Ctor<Access::PUBLIC, false, ::Foo>()
                 .Base<Access::PUBLIC, ::Foo, ::MyBaseClass<int>>("::MyBaseClass<int>", false)
                 .Base<Access::PUBLIC, ::Foo, ::MyOtherBaseClass>("::MyOtherBaseClass", false)
                 .Member<Access::PUBLIC, int>("::Foo::x", offsetof(::Foo, x))
@@ -111,9 +56,10 @@ namespace ReflectMeta
                 .Method<Access::PUBLIC, Qualifiers::NONE, const int&, ::Foo>("::Foo::SomeCoolFunction", &::Foo::SomeCoolFunction, true)
                 .Method<Access::PUBLIC, Qualifiers::NONE, void, ::Foo, int*>("::Foo::SomeCoolerFunction", &::Foo::SomeCoolerFunction, true)
                 .Method<Access::PUBLIC, Qualifiers::NONE, void, ::Foo>("::Foo::MyCoolerMethod", &::Foo::MyCoolerMethod, true)
-                .MethodTemplated<TypenameType::DEFAULT, TypenameClass, Access::PUBLIC, Qualifiers::NOEXCEPT_, void, ::Foo, TypenameClass*, TypenameClass&, const TypenameClass>("::Foo::SomeOtherMethod", ReflectMetaGenerated::kErased_SomeOtherMethod)
-                .MethodTemplated<TypenameType::CONCEPT, ReflectMetaConcept_MyConcept<TypenameClass>, Access::PUBLIC, Qualifiers::CONST_ | Qualifiers::NOEXCEPT_, ReflectMetaConcept_MyConcept<TypenameClass>, ::Foo, ReflectMetaConcept_MyConcept<TypenameClass>*, const ReflectMetaConcept_MyConcept<TypenameClass>&, ReflectMetaConcept_MyConcept<TypenameClass>**>("::Foo::SomeOtherOtherMethod", ReflectMetaGenerated::kErased_SomeOtherOtherMethod)
+                .MethodTemplated<TypenameType::DEFAULT, TypenameClass, Access::PUBLIC, Qualifiers::NOEXCEPT_, void, ::Foo, TypenameClass*, TypenameClass&, const TypenameClass>("::Foo::SomeOtherMethod")
+                .MethodTemplated<TypenameType::CONCEPT, ConceptTypesInternal::MyConcept<TypenameClass>, Access::PUBLIC, Qualifiers::CONST_ | Qualifiers::NOEXCEPT_, ConceptTypesInternal::MyConcept<TypenameClass>, ::Foo, ConceptTypesInternal::MyConcept<TypenameClass>*, const ConceptTypesInternal::MyConcept<TypenameClass>&, ConceptTypesInternal::MyConcept<TypenameClass>**>("::Foo::SomeOtherOtherMethod")
                 .Commit();
+
             return th;
         }
     };
@@ -129,7 +75,7 @@ namespace ReflectMeta
             }();
     };
 
-    template <>
+    template <> 
     struct Reflect_Impl<::MyOtherBaseClass>
     {
         inline static bool done = []

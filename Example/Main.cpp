@@ -99,6 +99,15 @@ int main()
 
     Expect(textArgument == "hi", "SomeMethod should not modify std::string in example body");
 
+    const TypeDesc* fooDesc1 = Registry::Instance().Get("::Foo");
+    ClassTypeErased fooType1{ fooDesc1 };
+    
+    void* foo1 = Registry::Instance().New("::Foo", nullptr, 0, nullptr);
+    
+    Expect(foo1 != nullptr, "Failed to create instance of ::Foo");
+    
+    Registry::Instance().Delete("::Foo", foo1);
+
     {
         auto m = fooClass.GetMethod(true, "SomeCoolerFunction");
         int localValue = 123;
@@ -114,7 +123,7 @@ int main()
     {
         const std::type_info* targsInt[] = { &typeid(int) };
         int r = 0;
-        int* pointerIn = &r;
+        int* pointerIn = &r;  
         int constValue = 7;
         void* args[] = { &pointerIn, &r, &constValue };
         fooClass.GetMethodTemplated(false, "SomeOtherMethod").InvokeWithType(targsInt, &foo, args, nullptr);
